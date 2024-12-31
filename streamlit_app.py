@@ -1,98 +1,121 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import yfinance as yf
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
+import numpy as np
 
-# Title and Sidebar
-def main():
-    st.set_page_config(layout="wide")
-    st.title("FastGraphs Dashboard")
+# Title and Ticker Input
+st.title("Historical Stock Price and Forward Projections")
 
-    st.sidebar.title("Dashboard Filters")
-    
-    # Sample data loading
-    st.sidebar.markdown("## Upload Data")
-    uploaded_file = st.sidebar.file_uploader("Upload a CSV file", type="csv")
-    
-    if uploaded_file is not None:
-        data = pd.read_csv(uploaded_file)
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("## Filters")
+st.markdown(
+    "This dashboard displays the stock price on a logarithmic scale along with a trendline and a projection of the future stock price over the next 10 years. The projection is calculated using the historical trendline to model future price growth. Hover over the chart to view the stock price in actual dollars."
+)
 
-        # Add filters based on data columns
-        column_names = data.columns
-        filters = {}
-        for column in column_names:
-            unique_values = data[column].dropna().unique()
-            if len(unique_values) < 20:  # Dropdown for categorical
-                selected_values = st.sidebar.multiselect(f"Select {column}", unique_values, unique_values)
-                filters[column] = selected_values
-            else:  # Slider for numerical values
-                if pd.api.types.is_numeric_dtype(data[column]):
-                    min_val, max_val = int(data[column].min()), int(data[column].max())
-                    selected_range = st.sidebar.slider(f"Select range for {column}", min_val, max_val, (min_val, max_val))
-                    filters[column] = selected_range
+ticker = st.text_input("Enter Stock Ticker", value="AMZN", max_chars=5)
 
-        # Filter the data based on selections
-        for key, value in filters.items():
-            if isinstance(value, list):  # Multiselect
-                data = data[data[key].isin(value)]
-            elif isinstance(value, tuple):  # Slider range
-                data = data[(data[key] >= value[0]) & (data[key] <= value[1])]
+if ticker:
+    try:
+        # Fetch stock price data
+        start_date = (datetime.now() - timedelta(days=20 * 365)).strftime("%Y-%m-%d")
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        history = yf.download(ticker, start=start_date, end=end_date)
 
-        # Display filtered data
-        st.write("### Filtered Data", data)
+        if history.empty:
+            st.error("No stock price data available for the given ticker. Try a different one.")
+        else:
+            # Flatten MultiIndex columns (if present)
+            if isinstance(history.columns, pd.MultiIndex):
+                history.columns = history.columns.get_level_values(0)
 
-        # Visualization options
-        st.markdown("---")
-        st.markdown("## Visualizations")
+            # Ensure 'Close' is numeric and drop missing values
+            history = history.reset_index()
+            history["Close"] = pd.to_numeric(history["Close"], errors="coerce")
+            history = history.dropna(subset=["Close"])
 
-        visualization_type = st.selectbox("Choose visualization type", ["Bar Chart", "Line Chart", "Scatter Plot"])
+            # Calculate logarithmic stock price for trendline
+            x = np.arange(len(history))  # Use index as independent variable
+            y = np.log(history["Close"])  # Log of stock prices
 
-        if st.button("Generate Visualization"):
-            if visualization_type == "Bar Chart":
-                generate_bar_chart(data)
-            elif visualization_type == "Line Chart":
-                generate_line_chart(data)
-            elif visualization_type == "Scatter Plot":
-                generate_scatter_plot(data)
+            # Fit a trendline
+            coef = np.polyfit(x, y, 1)  # Linear fit
+            trendline = coef[0] * x + coef[1]
 
-# Visualization Functions
-def generate_bar_chart(data):
-    st.markdown("### Bar Chart")
-    x_column = st.selectbox("Select X-axis", data.columns, key="bar_x")
-    y_column = st.selectbox("Select Y-axis", data.columns, key="bar_y")
+            # Use historical trendline to project future values (10 years)
+            future_x = np.arange(len(history), len(history) + 3650)  # 10 years (approx.)
+            future_trendline = coef[0] * future_x + coef[1]
+            projected_dates = pd.date_range(start=history["Date"].iloc[-1], periods=3650, freq="D")
+            projected_prices = np.exp(future_trendline)  # Convert back to dollar scale
 
-    if x_column and y_column:
-        chart_data = data.groupby(x_column)[y_column].mean().sort_values()
-        st.bar_chart(chart_data)
+            # Calculate forward CAGR
+            initial_price = float(history["Close"].iloc[-1])  # Ensure numeric value
+            final_price = float(projected_prices[-1])  # Ensure numeric value
+            years = 10
+            cagr = ((final_price / initial_price) ** (1 / years) - 1) * 100
 
-def generate_line_chart(data):
-    st.markdown("### Line Chart")
-    x_column = st.selectbox("Select X-axis", data.columns, key="line_x")
-    y_column = st.selectbox("Select Y-axis", data.columns, key="line_y")
+            # Callout for forward CAGR
+            st.markdown(
+                f"<div style='border: 1px solid #d3d3d3; padding: 10px; background-color: #f9f9f9; font-size: 1.2em; text-align: center;'>"
+                f"Forward CAGR Projection: <b>{cagr:.2f}% per year</b>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
 
-    if x_column and y_column:
-        plt.figure(figsize=(10, 5))
-        plt.plot(data[x_column], data[y_column])
-        plt.title(f"Line Chart: {x_column} vs {y_column}")
-        plt.xlabel(x_column)
-        plt.ylabel(y_column)
-        st.pyplot(plt)
+            # Plotting stock price and projections using Plotly
+            st.write("### Stock Price Over Time with Historical Trendline-Based Projections")
 
-def generate_scatter_plot(data):
-    st.markdown("### Scatter Plot")
-    x_column = st.selectbox("Select X-axis", data.columns, key="scatter_x")
-    y_column = st.selectbox("Select Y-axis", data.columns, key="scatter_y")
+            fig = go.Figure()
 
-    if x_column and y_column:
-        plt.figure(figsize=(10, 5))
-        plt.scatter(data[x_column], data[y_column], alpha=0.7)
-        plt.title(f"Scatter Plot: {x_column} vs {y_column}")
-        plt.xlabel(x_column)
-        plt.ylabel(y_column)
-        st.pyplot(plt)
+            # Plot actual stock price
+            fig.add_trace(go.Scatter(
+                x=history["Date"],
+                y=history["Close"],
+                mode="lines",
+                name="Stock Price",
+                line=dict(color="blue")
+            ))
 
-if __name__ == "__main__":
-    main()
+            # Plot historical trendline
+            fig.add_trace(go.Scatter(
+                x=history["Date"],
+                y=np.exp(trendline),
+                mode="lines",
+                name="Trendline",
+                line=dict(color="orange", dash="dash")
+            ))
 
+            # Plot projected values based on historical trendline
+            fig.add_trace(go.Scatter(
+                x=projected_dates,
+                y=projected_prices,
+                mode="lines",
+                name="Projection (10 years)",
+                line=dict(color="green", dash="dash")
+            ))
 
+            # Update layout for interactivity and display
+            fig.update_layout(
+                title=f"{ticker} - Stock Price, Historical Trendline, and 10-Year Projection",
+                xaxis_title="Date",
+                yaxis_title="Stock Price (Log Scale)",
+                hovermode="x unified",
+                yaxis=dict(type="log"),
+                xaxis=dict(type="date")
+            )
+
+            st.plotly_chart(fig)
+
+            # Historical and projected annual prices
+            st.write("### Historical and Projected Annual Prices")
+            annual_prices = {
+                "Year": list(history["Date"].dt.year.unique()) + list(range(history["Date"].dt.year.max() + 1, history["Date"].dt.year.max() + 11)),
+                "Price": list(history.groupby(history["Date"].dt.year)["Close"].mean()) + [projected_prices[i * 365] for i in range(10)]
+            }
+            annual_prices_df = pd.DataFrame(annual_prices)
+
+            bar_fig = px.bar(annual_prices_df, x="Year", y="Price", title="Annual Historical and Projected Prices", labels={"Price": "Stock Price ($)", "Year": "Year"})
+            st.plotly_chart(bar_fig)
+
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
